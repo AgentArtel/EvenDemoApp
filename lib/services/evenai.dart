@@ -147,20 +147,26 @@ class EvenAI {
 
     // Use OpenClaw bridge instead of direct API call
     final bridge = OpenClawBridgeService.get();
-    String? answer = await bridge.sendMessage(combinedText);
+    final response = await bridge.sendMessage(combinedText);
     
-    if (answer == null) {
+    String answer;
+    List<String>? pages;
+    
+    if (response == null) {
       // Connection error - show error message
       answer = "OpenClaw connection error. Please check gateway.";
+      pages = null;
       print("recordOverByOS----OpenClaw connection failed for: *$combinedText*");
+    } else {
+      answer = response.text;
+      pages = response.pages.isNotEmpty ? response.pages : null;
+      print("recordOverByOS----startSendReply---combinedText-------*$combinedText*-----answer----$answer----pages:${pages?.length ?? 0}----");
     }
   
-    print("recordOverByOS----startSendReply---combinedText-------*$combinedText*-----answer----$answer----");
-
     updateDynamicText("$combinedText\n\n$answer");
     isEvenAISyncing.value = false;
     saveQuestionItem(combinedText, answer);
-    startSendReply(answer);
+    startSendReply(answer, pages: pages);
   }
 
   void saveQuestionItem(String title, String content) {
@@ -214,9 +220,15 @@ class EvenAI {
     clear();
   }
 
-  Future startSendReply(String text) async {
+  Future startSendReply(String text, {List<String>? pages}) async {
     _currentLine = 0;
-    list = EvenAIDataMethod.measureStringList(text);
+    
+    // Use pre-paginated pages if provided, otherwise fall back to manual pagination
+    if (pages != null && pages.isNotEmpty) {
+      list = pages;
+    } else {
+      list = EvenAIDataMethod.measureStringList(text);
+    }
    
     if (list.length < 4) {
       String startScreenWords =

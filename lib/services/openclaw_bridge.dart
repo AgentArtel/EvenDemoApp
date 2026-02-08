@@ -2,10 +2,23 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+/// Response from OpenClaw channel with paginated pages
+class OpenClawResponse {
+  final String text;
+  final List<String> pages;
+  final String? messageId;
+  
+  OpenClawResponse({
+    required this.text,
+    required this.pages,
+    this.messageId,
+  });
+}
+
 /// OpenClaw WebSocket Bridge Service
 /// 
-/// Maintains a WebSocket connection to the OpenClaw gateway and handles
-/// sending user queries and receiving agent responses.
+/// Maintains a WebSocket connection to the eveng1 channel WebSocket server and handles
+/// sending user queries and receiving paginated agent responses.
 class OpenClawBridgeService {
   static OpenClawBridgeService? _instance;
   static OpenClawBridgeService get() {
@@ -21,21 +34,21 @@ class OpenClawBridgeService {
   int _reconnectAttempts = 0;
   static const int _maxReconnectAttempts = 3;
   
-  // Response futures keyed by request ID
-  final Map<String, Completer<String?>> _pendingRequests = {};
+  // Single completer for the current message (channel handles one at a time)
+  Completer<OpenClawResponse?>? _currentRequest;
   
   // Connection status stream controller
   final _connectionStatusController = StreamController<bool>.broadcast();
   Stream<bool> get connectionStatus => _connectionStatusController.stream;
   
-  // WebSocket URL - default to localhost, configurable via environment
+  // WebSocket URL - connects to eveng1 channel WebSocket server (port 3377)
   String get _wsUrl {
     // TODO: Read from environment variable OPENCLAW_WS_URL in future
-    const defaultUrl = 'ws://localhost:18789';
+    const defaultUrl = 'ws://localhost:3377';
     return defaultUrl;
   }
 
-  /// Connect to OpenClaw gateway
+  /// Connect to eveng1 channel WebSocket server
   Future<bool> connect() async {
     if (_isConnected || _isConnecting) {
       return _isConnected;
@@ -54,9 +67,6 @@ class OpenClawBridgeService {
         onDone: _handleDisconnect,
         cancelOnError: false,
       );
-
-      // Send connect handshake
-      await _sendConnectRequest();
       
       _isConnected = true;
       _isConnecting = false;
@@ -73,78 +83,60 @@ class OpenClawBridgeService {
     }
   }
 
-  /// Send connect handshake request
-  Future<void> _sendConnectRequest() async {
-    final connectRequest = {
-      'type': 'req',
-      'id': 'connect-${DateTime.now().millisecondsSinceEpoch}',
-      'method': 'connect',
-      'params': {
-        'minProtocol': 3,
-        'maxProtocol': 3,
-        'client': {
-          'id': 'eveng1-flutter',
-          'version': '1.0.0',
-          'platform': 'android',
-          'mode': 'node',
-        },
-        'role': 'node',
-        'scopes': ['node.read', 'node.write'],
-        'caps': [],
-        'commands': [],
-        'permissions': {},
-        'auth': {}, // Minimal auth for local development
-        'locale': 'en-US',
-        'userAgent': 'eveng1-flutter/1.0.0',
-      },
-    };
-
-    _channel?.sink.add(jsonEncode(connectRequest));
-    print('[OpenClawBridge] Sent connect request');
-  }
-
-  /// Handle incoming WebSocket messages
+  /// Handle incoming WebSocket messages (TASK-007 protocol)
   void _handleMessage(dynamic message) {
     try {
       final data = jsonDecode(message.toString());
       final type = data['type'] as String?;
-      final id = data['id'] as String?;
 
-      if (type == 'res' && id != null) {
-        // Response to a request
-        final completer = _pendingRequests.remove(id);
-        if (completer != null) {
-          if (data['ok'] == true) {
-            final payload = data['payload'];
-            // Extract text from payload - format may vary, try common fields
-            String? text;
-            if (payload is Map) {
-              text = payload['text'] as String? ?? 
-                     payload['content'] as String? ??
-                     payload['message'] as String?;
-            }
-            completer.complete(text);
-          } else {
-            final error = data['error'] ?? 'Unknown error';
-            print('[OpenClawBridge] Request $id failed: $error');
-            completer.complete(null);
-          }
+      if (type == 'response') {
+        // Agent response with paginated pages
+        final text = data['text'] as String? ?? '';
+        final pagesData = data['pages'];
+        final messageId = data['messageId'] as String?;
+        
+        List<String> pages = [];
+        if (pagesData is List) {
+          pages = pagesData.map((p) => p.toString()).toList();
+        } else if (text.isNotEmpty) {
+          // Fallback: create single page from text if pages not provided
+          pages = [text];
         }
-      } else if (type == 'event') {
-        // Handle events (presence, tick, etc.) - minimal implementation for now
-        final event = data['event'] as String?;
-        print('[OpenClawBridge] Received event: $event');
-      } else if (type == 'res' && id == null) {
-        // Connect response
-        if (data['ok'] == true) {
-          print('[OpenClawBridge] Connect handshake successful');
-        } else {
-          print('[OpenClawBridge] Connect handshake failed: ${data['error']}');
-          _handleDisconnect();
+        
+        final response = OpenClawResponse(
+          text: text,
+          pages: pages,
+          messageId: messageId, // Store for potential future use (logging, tracking)
+        );
+        
+        if (_currentRequest != null && !_currentRequest!.isCompleted) {
+          _currentRequest!.complete(response);
+          _currentRequest = null;
         }
+        
+        print('[OpenClawBridge] Received response (${pages.length} pages)');
+      } else if (type == 'error') {
+        // Error response
+        final error = data['error'] as String? ?? 'Unknown error';
+        final messageId = data['messageId'] as String?;
+        
+        print('[OpenClawBridge] Received error: $error');
+        
+        // Complete with null to indicate error
+        if (_currentRequest != null && !_currentRequest!.isCompleted) {
+          _currentRequest!.complete(null);
+          _currentRequest = null;
+        }
+      } else {
+        print('[OpenClawBridge] Unknown message type: $type');
       }
     } catch (e) {
       print('[OpenClawBridge] Error parsing message: $e');
+      // Complete request with null on parse error
+      if (_currentRequest != null && !_currentRequest!.isCompleted) {
+        _currentRequest!.complete(null);
+        _currentRequest = null;
+      }
     }
   }
 
@@ -162,11 +154,11 @@ class OpenClawBridgeService {
     _connectionStatusController.add(false);
     print('[OpenClawBridge] Disconnected');
     
-    // Complete all pending requests with null
-    for (final completer in _pendingRequests.values) {
-      completer.complete(null);
+    // Complete current request with null
+    if (_currentRequest != null && !_currentRequest!.isCompleted) {
+      _currentRequest!.complete(null);
+      _currentRequest = null;
     }
-    _pendingRequests.clear();
     
     // Attempt reconnection with exponential backoff
     if (_reconnectAttempts < _maxReconnectAttempts) {
@@ -192,10 +184,10 @@ class OpenClawBridgeService {
     });
   }
 
-  /// Send a message to OpenClaw and wait for response
+  /// Send a message to OpenClaw channel and wait for paginated response
   /// 
-  /// Returns the agent response text, or null if connection failed or timeout
-  Future<String?> sendMessage(String text) async {
+  /// Returns the agent response with paginated pages, or null if connection failed or timeout
+  Future<OpenClawResponse?> sendMessage(String text) async {
     if (!_isConnected) {
       // Try to connect if not connected
       final connected = await connect();
@@ -205,39 +197,37 @@ class OpenClawBridgeService {
       }
     }
 
-    final requestId = 'msg-${DateTime.now().millisecondsSinceEpoch}';
-    final completer = Completer<String?>();
+    // Cancel any existing request
+    if (_currentRequest != null && !_currentRequest!.isCompleted) {
+      _currentRequest!.complete(null);
+    }
+
+    final completer = Completer<OpenClawResponse?>();
+    _currentRequest = completer;
 
     // Set timeout (30 seconds)
     Timer(Duration(seconds: 30), () {
       if (!completer.isCompleted) {
         completer.complete(null);
-        _pendingRequests.remove(requestId);
-        print('[OpenClawBridge] Request $requestId timed out');
+        _currentRequest = null;
+        print('[OpenClawBridge] Request timed out');
       }
     });
 
-    _pendingRequests[requestId] = completer;
-
     try {
-      final request = {
-        'type': 'req',
-        'id': requestId,
-        'method': 'send',
-        'params': {
-          'channel': 'eveng1',
-          'accountId': 'default',
-          'text': text,
-        },
+      // Send message using TASK-007 protocol
+      final message = {
+        'type': 'message',
+        'text': text,
       };
 
-      _channel?.sink.add(jsonEncode(request));
+      _channel?.sink.add(jsonEncode(message));
       print('[OpenClawBridge] Sent message: ${text.substring(0, text.length > 50 ? 50 : text.length)}...');
       
       return await completer.future;
     } catch (e) {
-      _pendingRequests.remove(requestId);
-      print('[OpenClawBridge] Error sending request: $e');
+      _currentRequest = null;
+      print('[OpenClawBridge] Error sending message: $e');
       return null;
     }
   }
@@ -251,11 +241,11 @@ class OpenClawBridgeService {
     _reconnectAttempts = 0;
     _connectionStatusController.add(false);
     
-    // Complete all pending requests
-    for (final completer in _pendingRequests.values) {
-      completer.complete(null);
+    // Complete current request
+    if (_currentRequest != null && !_currentRequest!.isCompleted) {
+      _currentRequest!.complete(null);
+      _currentRequest = null;
     }
-    _pendingRequests.clear();
     
     print('[OpenClawBridge] Disconnected');
   }
