@@ -1,6 +1,7 @@
 
 import 'package:demo_ai_even/ble_manager.dart';
 import 'package:demo_ai_even/controllers/evenai_model_controller.dart';
+import 'package:demo_ai_even/services/openclaw_bridge.dart';
 import 'package:demo_ai_even/views/home_page.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -9,6 +10,15 @@ import 'package:get/get.dart';
 void main() {
   BleManager.get();
   Get.put(EvenaiModelController());
+  
+  // Initialize OpenClaw bridge connection
+  OpenClawBridgeService.get().connect().then((connected) {
+    if (connected) {
+      print('[Main] OpenClaw bridge connected successfully');
+    } else {
+      print('[Main] OpenClaw bridge connection failed - will retry on first use');
+    }
+  });
   
   runApp(MyApp());
 }

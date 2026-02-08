@@ -3,7 +3,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:demo_ai_even/ble_manager.dart';
 import 'package:demo_ai_even/controllers/evenai_model_controller.dart';
-import 'package:demo_ai_even/services/api_services_deepseek.dart';
+import 'package:demo_ai_even/services/openclaw_bridge.dart';
 import 'package:demo_ai_even/services/proto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -145,8 +145,15 @@ class EvenAI {
       return;
     }
 
-    final apiService = ApiDeepSeekService();
-    String answer = await apiService.sendChatRequest(combinedText);
+    // Use OpenClaw bridge instead of direct API call
+    final bridge = OpenClawBridgeService.get();
+    String? answer = await bridge.sendMessage(combinedText);
+    
+    if (answer == null) {
+      // Connection error - show error message
+      answer = "OpenClaw connection error. Please check gateway.";
+      print("recordOverByOS----OpenClaw connection failed for: *$combinedText*");
+    }
   
     print("recordOverByOS----startSendReply---combinedText-------*$combinedText*-----answer----$answer----");
 

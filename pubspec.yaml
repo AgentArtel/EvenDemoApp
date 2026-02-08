@@ -44,6 +44,8 @@ dependencies:
   crclib: ^3.0.0
   # Toast - https://pub.dev/packages/fluttertoast
   fluttertoast: ^8.2.8
+  # WebSocket client for OpenClaw gateway connection
+  web_socket_channel: ^3.0.1
 
 
 dev_dependencies:
