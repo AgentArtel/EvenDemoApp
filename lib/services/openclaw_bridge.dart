@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import '../config/app_config.dart';
 
 /// Response from OpenClaw channel with paginated pages
 class OpenClawResponse {
@@ -42,10 +43,9 @@ class OpenClawBridgeService {
   Stream<bool> get connectionStatus => _connectionStatusController.stream;
   
   // WebSocket URL - connects to eveng1 channel WebSocket server (port 3377)
+  // Uses AppConfig for environment-based URL selection
   String get _wsUrl {
-    // TODO: Read from environment variable OPENCLAW_WS_URL in future
-    const defaultUrl = 'ws://localhost:3377';
-    return defaultUrl;
+    return AppConfig.openClawWsUrl;
   }
 
   /// Connect to eveng1 channel WebSocket server
