@@ -372,7 +372,7 @@ class EvenAI {
     }
 
     if (_currentLine - 5 < 0) {
-      _currentLine == 0;
+      _currentLine = 0;
     } else {
       _currentLine -= 5;
     }
